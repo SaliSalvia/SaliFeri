@@ -1,0 +1,22 @@
+```yaml
+name: Cleanup Downloads
+
+on:
+  workflow_dispatch:
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          rm -rf Downloads
+          mkdir -p Downloads
+          echo "<html><body><h1>Downloads folder is empty</h1></body></html>" > Downloads/index.html
+      - run: |
+          git config user.name "cleanup-bot"
+          git config user.email "cleanup@local"
+          git add Downloads/
+          git commit -m "Cleanup all files" || echo "Empty"
+          git push
+```
