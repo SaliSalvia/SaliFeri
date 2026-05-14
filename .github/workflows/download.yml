@@ -1,0 +1,102 @@
+name: SaliFeri Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: 'لینک‌های دانلود (برای چند لینک با فاصله جدا کنید)'
+        required: true
+        type: string
+      password:
+        description: 'رمز فایل ZIP (اختیاری)'
+        required: false
+        type: string
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 zip p7zip-full ffmpeg curl
+          pip install yt-dlp
+
+      - name: Create Downloads folder
+        run: mkdir -p Downloads
+
+      - name: Process links
+        run: |
+          urls="${{ github.event.inputs.urls }}"
+          password="${{ github.event.inputs.password }}"
+          index=1
+          for url in $urls; do
+            echo "Processing: $url"
+            if echo "$url" | grep -qE "(youtube\.com|youtu\.be|aparat\.com|instagram\.com)"; then
+              yt-dlp -f "best[ext=mp4]" "$url" -o "temp_$index.mp4"
+              filename="temp_$index.mp4"
+            else
+              filesize=$(curl -sI "$url" | grep -i "content-length" | awk '{print $2}' | tr -d '\r')
+              if [ -n "$filesize" ] && [ "$filesize" -gt 1073741824 ]; then
+                echo "ERROR: File larger than 1GB, skipped"
+                index=$((index+1))
+                continue
+              fi
+              aria2c -x 16 "$url" -o "temp_$index"
+              filename="temp_$index"
+            fi
+            [ ! -f "$filename" ] && { echo "Download failed"; index=$((index+1)); continue; }
+            timestamp=$(date +%Y%m%d_%H%M%S)
+            zip_name="SaliFeri_${timestamp}_${index}"
+            if [ -n "$password" ]; then
+              zip --password "$password" "${zip_name}.zip" "$filename"
+            else
+              zip "${zip_name}.zip" "$filename"
+            fi
+            filesize_zip=$(stat -c%s "${zip_name}.zip" 2>/dev/null || echo 0)
+            if [ "$filesize_zip" -gt 104857600 ]; then
+              7z a -v90m "${zip_name}_part.zip" "${zip_name}.zip"
+              rm -f "${zip_name}.zip"
+              for part in "${zip_name}_part.zip".*; do
+                [ -f "$part" ] && mv "$part" Downloads/
+              done
+            else
+              mv "${zip_name}.zip" Downloads/
+            fi
+            rm -f "$filename"
+            echo "Done with link $index"
+            index=$((index+1))
+          done
+
+      - name: Create index.html
+        run: |
+          cd Downloads
+          cat > index.html << 'HTML'
+          <!DOCTYPE html>
+          <html lang="fa" dir="rtl">
+          <head><meta charset="UTF-8"><title>SaliFeri Downloads</title>
+          <style>body{font-family:sans-serif;max-width:800px;margin:auto;padding:20px;background:#f0f2f5}h1{color:#1a73e8}ul{list-style:none;padding:0}li{background:white;margin:10px 0;padding:12px;border-radius:8px}a{color:#1a73e8}</style>
+          </head><body><h1>📁 SaliFeri Downloads</h1><ul>
+          HTML
+          for f in *.zip*; do [ -f "$f" ] && echo "<li><a href='$f'>$f</a></li>" >> index.html; done
+          echo '</ul><hr><p>SaliFeri | <a href="https://github.com/SaliSalvia/SaliFeri">GitHub</a></p></body></html>' >> index.html
+          cd ..
+
+      - name: Auto cleanup (remove oldest if >900MB)
+        run: |
+          total=$(du -sb Downloads | cut -f1)
+          if [ "$total" -gt 943718400 ]; then
+            oldest=$(ls -t Downloads/*.zip* 2>/dev/null | tail -1)
+            [ -f "$oldest" ] && rm -f "$oldest"
+          fi
+
+      - name: Push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "actions@github.com"
+          git add Downloads/
+          git commit -m "Add downloaded files" || echo "No changes"
+          git push
